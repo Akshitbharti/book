@@ -6,6 +6,15 @@ from openpyxl.utils import get_column_letter
 import tempfile
 import os
 
+# ReportLab for PDF
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.units import cm
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
+import io
+
 # ── Base Book Data ─────────────────────────────────────────────────────────────
 BASE_BOOKS = [
     (1,"101","Sarangi (Hindi)",83.00),(2,"102","Mridang (English)",99.00),
@@ -165,6 +174,138 @@ def generate_excel_bytes(summary_rows, grand_total):
     os.unlink(tmp.name)
     return data
 
+
+# ── PDF Generator ──────────────────────────────────────────────────────────────
+def generate_pdf_bytes(summary_rows, grand_total):
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=1.5*cm, rightMargin=1.5*cm,
+        topMargin=1.5*cm, bottomMargin=1.5*cm
+    )
+
+    # Colours
+    dark_blue  = colors.HexColor("#0A3D62")
+    mid_blue   = colors.HexColor("#1565C0")
+    navy       = colors.HexColor("#0D47A1")
+    light_blue = colors.HexColor("#E3F2FD")
+    white      = colors.white
+    black      = colors.black
+
+    styles = getSampleStyleSheet()
+
+    title_style = ParagraphStyle(
+        "title", parent=styles["Normal"],
+        fontSize=16, fontName="Helvetica-Bold",
+        textColor=white, alignment=TA_CENTER,
+        spaceAfter=0,
+    )
+    normal_center = ParagraphStyle(
+        "nc", parent=styles["Normal"],
+        fontSize=8, alignment=TA_CENTER,
+    )
+    normal_left = ParagraphStyle(
+        "nl", parent=styles["Normal"],
+        fontSize=8, alignment=TA_LEFT,
+    )
+
+    story = []
+
+    # ── Title block ──
+    title_data = [[Paragraph("Book Order Summary", title_style)]]
+    title_tbl  = Table(title_data, colWidths=[17.7*cm])
+    title_tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,-1), dark_blue),
+        ("TOPPADDING",    (0,0), (-1,-1), 10),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 10),
+        ("LEFTPADDING",   (0,0), (-1,-1), 8),
+        ("RIGHTPADDING",  (0,0), (-1,-1), 8),
+    ]))
+    story.append(title_tbl)
+    story.append(Spacer(1, 0.3*cm))
+
+    # ── Table header ──
+    headers = ["Sr.\nNo.", "Book\nCode", "Book Name", "Unit Price\n(Rs)", "Qty", "Subtotal\n(Rs)"]
+    col_w   = [1.2*cm, 2*cm, 8.5*cm, 2.5*cm, 1.5*cm, 2*cm]
+
+    header_row = [Paragraph(h, ParagraphStyle(
+        "hdr", parent=styles["Normal"],
+        fontSize=8, fontName="Helvetica-Bold",
+        textColor=white, alignment=TA_CENTER,
+    )) for h in headers]
+
+    # ── Data rows ──
+    data = [header_row]
+    for i, row_data in enumerate(summary_rows, 1):
+        price_val    = float(str(row_data["Unit Price (Rs)"]).replace("Rs", "").replace(",", "").strip())
+        subtotal_val = float(str(row_data["Subtotal (Rs)"]).replace("Rs", "").replace(",", "").strip())
+        row = [
+            Paragraph(str(i),                         normal_center),
+            Paragraph(str(row_data["Book Code"]),     normal_center),
+            Paragraph(str(row_data["Book Name"]),     normal_left),
+            Paragraph(f"Rs {price_val:.2f}",          normal_center),
+            Paragraph(str(row_data["Quantity"]),      normal_center),
+            Paragraph(f"Rs {subtotal_val:.2f}",       normal_center),
+        ]
+        data.append(row)
+
+    # Grand total row
+    grand_style = ParagraphStyle(
+        "gt", parent=styles["Normal"],
+        fontSize=9, fontName="Helvetica-Bold",
+        textColor=white, alignment=TA_RIGHT,
+    )
+    grand_val_style = ParagraphStyle(
+        "gtv", parent=styles["Normal"],
+        fontSize=9, fontName="Helvetica-Bold",
+        textColor=white, alignment=TA_CENTER,
+    )
+    data.append([
+        Paragraph("GRAND TOTAL", grand_style),
+        "", "", "", "",
+        Paragraph(f"Rs {grand_total:.2f}", grand_val_style),
+    ])
+
+    tbl = Table(data, colWidths=col_w, repeatRows=1)
+
+    # Build alternating row styles
+    style_cmds = [
+        # Header
+        ("BACKGROUND",    (0, 0), (-1, 0),  mid_blue),
+        ("TEXTCOLOR",     (0, 0), (-1, 0),  white),
+        ("ALIGN",         (0, 0), (-1, 0),  "CENTER"),
+        ("VALIGN",        (0, 0), (-1,-1),  "MIDDLE"),
+        ("FONTNAME",      (0, 0), (-1, 0),  "Helvetica-Bold"),
+        ("FONTSIZE",      (0, 0), (-1, 0),  8),
+        ("TOPPADDING",    (0, 0), (-1, 0),  6),
+        ("BOTTOMPADDING", (0, 0), (-1, 0),  6),
+        # Grid
+        ("GRID",          (0, 0), (-1,-2),  0.4, colors.HexColor("#BBBBBB")),
+        ("TOPPADDING",    (0, 1), (-1,-2),  4),
+        ("BOTTOMPADDING", (0, 1), (-1,-2),  4),
+        ("LEFTPADDING",   (0, 0), (-1,-1),  4),
+        ("RIGHTPADDING",  (0, 0), (-1,-1),  4),
+        # Grand total row
+        ("BACKGROUND",   (0,-1), (-1,-1), navy),
+        ("SPAN",         (0,-1), (4,-1)),
+        ("TOPPADDING",   (0,-1), (-1,-1), 6),
+        ("BOTTOMPADDING",(0,-1), (-1,-1), 6),
+        ("LINEABOVE",    (0,-1), (-1,-1), 1, navy),
+    ]
+
+    # Alternating row colours for data rows
+    for i in range(1, len(summary_rows) + 1):
+        if i % 2 == 0:
+            style_cmds.append(("BACKGROUND", (0, i), (-1, i), light_blue))
+
+    tbl.setStyle(TableStyle(style_cmds))
+    story.append(tbl)
+
+    doc.build(story)
+    buf.seek(0)
+    return buf.getvalue()
+
+
 # ── Page Config ────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Book Order System", layout="wide")
 st.title("📚 Book Order System")
@@ -182,18 +323,16 @@ for i, cb in enumerate(st.session_state.custom_books):
 
 df = pd.DataFrame(all_books, columns=["Sr. No.", "Book Code", "Book Name", "Price (Rs)"])
 
-# ── ➕ Add Custom Book Section ──────────────────────────────────────────────────
+# ── Add Custom Book Section ────────────────────────────────────────────────────
 with st.expander("➕ Add a New Book to the List", expanded=False):
     st.markdown("Fill in the details below and click **Add Book**.")
     col1, col2, col3, col4 = st.columns([1.5, 3, 1.5, 1])
-    new_code  = col1.text_input("Book Code",  placeholder="e.g. 9999",  key="new_code")
+    new_code  = col1.text_input("Book Code",  placeholder="e.g. 9999",       key="new_code")
     new_name  = col2.text_input("Book Name",  placeholder="e.g. My New Book", key="new_name")
     new_price = col3.number_input("Price (Rs)", min_value=0.0, step=0.5, format="%.2f", key="new_price")
-
     add_clicked = col4.button("✅ Add Book", use_container_width=True)
 
     if add_clicked:
-        # Validations
         if not new_code.strip():
             st.error("❌ Book Code cannot be empty.")
         elif not new_name.strip():
@@ -201,17 +340,16 @@ with st.expander("➕ Add a New Book to the List", expanded=False):
         elif new_price <= 0:
             st.error("❌ Price must be greater than 0.")
         elif new_code.strip() in df["Book Code"].values:
-            st.error(f"❌ Book Code **{new_code.strip()}** already exists. Use a different code.")
+            st.error(f"❌ Book Code **{new_code.strip()}** already exists.")
         else:
             st.session_state.custom_books.append({
                 "code":  new_code.strip(),
                 "name":  new_name.strip(),
                 "price": float(new_price),
             })
-            st.success(f"✅ Book **{new_name.strip()}** (Code: {new_code.strip()}) added successfully!")
+            st.success(f"✅ Book **{new_name.strip()}** added successfully!")
             st.rerun()
 
-    # Show custom books added this session with delete option
     if st.session_state.custom_books:
         st.markdown("**Custom books added this session:**")
         for idx, cb in enumerate(st.session_state.custom_books):
@@ -220,14 +358,13 @@ with st.expander("➕ Add a New Book to the List", expanded=False):
             cc2.write(cb["name"])
             cc3.write(f"Rs {cb['price']:.2f}")
             if cc4.button("🗑️", key=f"del_custom_{idx}", help="Remove this book"):
-                # Also remove from quantities if selected
                 st.session_state.quantities.pop(cb["code"], None)
                 st.session_state.custom_books.pop(idx)
                 st.rerun()
 
 st.divider()
 
-# ── Rebuild df after any custom book changes ───────────────────────────────────
+# Rebuild df after custom book changes
 all_books = list(BASE_BOOKS)
 for i, cb in enumerate(st.session_state.custom_books):
     all_books.append((start_sr + i, cb["code"], cb["name"], cb["price"]))
@@ -324,19 +461,35 @@ else:
 
     st.markdown("&nbsp;")
 
-    # Excel download — cached in session state
+    # ── Cache Excel & PDF bytes ────────────────────────────────────────────────
     order_key = str(sorted(ordered.items()))
     if st.session_state.get("excel_key") != order_key:
         st.session_state.excel_bytes = generate_excel_bytes(summary_rows, grand_total)
+        st.session_state.pdf_bytes   = generate_pdf_bytes(summary_rows, grand_total)
         st.session_state.excel_key   = order_key
 
-    st.download_button(
-        label="📥 Download Order as Excel",
-        data=st.session_state.excel_bytes,
-        file_name="Book_Order_Summary.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        type="primary",
-    )
+    # ── Download Buttons side by side ─────────────────────────────────────────
+    dl1, dl2 = st.columns(2)
+
+    with dl1:
+        st.download_button(
+            label="📥 Download Order as Excel",
+            data=st.session_state.excel_bytes,
+            file_name="Book_Order_Summary.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            use_container_width=True,
+        )
+
+    with dl2:
+        st.download_button(
+            label="📄 Download Order as PDF",
+            data=st.session_state.pdf_bytes,
+            file_name="Book_Order_Summary.pdf",
+            mime="application/pdf",
+            type="primary",
+            use_container_width=True,
+        )
 
     st.markdown("&nbsp;")
 
